@@ -83,7 +83,6 @@ graph TB
 Chatbot/
 ├── README.md                          # This comprehensive guide
 ├── requirements.txt                   # Python dependencies
-├── syam.py                           # (Currently empty - future development)
 │
 ├── openai cahtbot/                   # Simple OpenAI Chatbot
 │   └── main.py                       # Streamlit app for basic Q&A
