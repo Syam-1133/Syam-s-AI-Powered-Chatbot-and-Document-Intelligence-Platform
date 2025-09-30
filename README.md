@@ -108,7 +108,7 @@ Chatbot/
 
 ### **Step 1: Clone the Repository**
 ```bash
-git clone <your-repository-url>
+git clone <https://github.com/Syam-1133/-Syam-s-AI-Powered-Chatbot-and-Document-Intelligence-Platform->
 cd Chatbot
 ```
 
