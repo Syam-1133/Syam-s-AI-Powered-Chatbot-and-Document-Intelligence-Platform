@@ -1435,6 +1435,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 **Developer**: Syam Gudipudi  
 **Project**: AI-Powered Chatbot Platform  
 **Repository**: [https://github.com/Syam-1133/-Syam-s-AI-Powered-Chatbot-and-Document-Intelligence-Platform-]
+**Demo video**: https://www.linkedin.com/feed/update/urn:li:activity:7378632424743690260/
 
 For questions, issues, or contributions, please open an issue on GitHub or contact the development team.
 
