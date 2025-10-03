@@ -1,0 +1,38 @@
+# Document Intelligence Platform - Requirements
+
+# Core Framework
+streamlit>=1.28.0
+
+# AI/ML Libraries
+langchain>=0.1.0
+langchain-groq>=0.1.0
+langchain-openai>=0.1.0
+langchain-community>=0.0.20
+
+# Vector Store and Embeddings
+faiss-cpu>=1.7.4
+openai>=1.0.0
+
+# Document Processing
+pypdf>=3.17.0
+python-docx>=0.8.11
+docx2txt>=0.8
+
+# Text Processing
+tiktoken>=0.5.0
+
+# Environment Management
+python-dotenv>=1.0.0
+
+# Data Processing
+pandas>=1.5.0
+numpy>=1.24.0
+
+# Utilities
+requests>=2.31.0
+pathlib
+
+# Optional: Development and Testing
+# pytest>=7.0.0
+# black>=22.0.0
+# flake8>=5.0.0
