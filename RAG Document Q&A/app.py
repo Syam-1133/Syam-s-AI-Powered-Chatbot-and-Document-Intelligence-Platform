@@ -5,7 +5,15 @@ import shutil
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 os.environ['OMP_NUM_THREADS'] = '1'
 
+# Configure page with dark theme FIRST
 import streamlit as st
+st.set_page_config(
+    page_title="Document Intelligence Platform",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 from langchain_groq import ChatGroq
 from langchain_openai import OpenAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -15,23 +23,33 @@ from langchain.chains import create_retrieval_chain
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFDirectoryLoader, PyPDFLoader
 from langchain_community.document_loaders import TextLoader
-from langchain_community.document_loaders import Docx2txtLoader
 import time
 import pandas as pd
 from datetime import datetime
 
+# Voice assistant imports
+import pyttsx3
+import speech_recognition as sr
+import threading
+import queue
+import io
+from gtts import gTTS
+import base64
+import requests
+import json
+
+# Alternative DOCX loader
+try:
+    from docx import Document
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+    st.warning("python-docx not available. Install with: pip install python-docx")
+
 from dotenv import load_dotenv
 load_dotenv()
 
-# Configure page with dark theme
-st.set_page_config(
-    page_title="Document Intelligence Platform",
-    page_icon="🔍",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Dark theme CSS with professional styling
+# Dark theme CSS with professional styling - Enhanced for voice features
 st.markdown("""
 <style>
     .main {
@@ -82,13 +100,20 @@ st.markdown("""
         color: #ffd700;
     }
     .response-box {
-        background: linear-gradient(135deg, #1a1f2e, #0f131f);
-        border: 1px solid #4cc9f0;
-        border-radius: 10px;
-        padding: 1.8rem;
-        margin: 1.5rem 0;
-        color: #e0f7fa;
-        box-shadow: 0 4px 20px rgba(76, 201, 240, 0.2);
+        background: rgba(15, 23, 42, 0.95);
+        border: 2px solid;
+        border-image: linear-gradient(135deg, #00f5ff, #0066ff, #9d4edd) 1;
+        border-radius: 8px;
+        padding: 2rem;
+        margin: 1rem auto;
+        box-shadow: 0 8px 32px rgba(0, 102, 255, 0.4),
+                0 0 25px rgba(0, 245, 255, 0.3);
+        color: #e2e8f0;
+        line-height: 1.6;
+        min-height: 400px;
+        width: 90%;
+        max-width: 600px;
+        overflow-y: auto;
     }
     .source-box {
         background: linear-gradient(135deg, #2d3047, #1a1c2b);
@@ -170,12 +195,60 @@ st.markdown("""
         text-align: center;
         margin-bottom: 2rem;
     }
+    .voice-controls {
+        background: linear-gradient(135deg, #2d1a4c, #1a1c2b);
+        padding: 1.5rem;
+        border-radius: 12px;
+        border: 1px solid #8a2be2;
+        margin: 1rem 0;
+    }
+    .voice-active {
+        background: linear-gradient(135deg, #1a472a, #0d1f14);
+        border: 2px solid #00ff00;
+        animation: pulse 2s infinite;
+    }
+    .premium-voice {
+        background: linear-gradient(135deg, #4a1a6c, #2d1a4c);
+        border: 2px solid #ff6b6b;
+        padding: 1.5rem;
+        border-radius: 12px;
+        margin: 1rem 0;
+    }
+    @keyframes pulse {
+        0% { border-color: #00ff00; }
+        50% { border-color: #00d4aa; }
+        100% { border-color: #00ff00; }
+    }
+    .voice-selection {
+        background: linear-gradient(135deg, #1f2833, #0b0c10);
+        padding: 1rem;
+        border-radius: 10px;
+        border: 1px solid #45a29e;
+        margin: 0.5rem 0;
+    }
+    .voice-option {
+        padding: 0.8rem;
+        margin: 0.3rem 0;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        border: 1px solid #45a29e;
+    }
+    .voice-option:hover {
+        background: linear-gradient(135deg, #2d3047, #1a1c2b);
+        border-color: #8a2be2;
+    }
+    .voice-option.selected {
+        background: linear-gradient(135deg, #4a1a6c, #2d1a4c);
+        border-color: #ff6b6b;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # Configure API keys
 os.environ['OPENAI_API_KEY'] = os.getenv('OPENAI_API_KEY')
 os.environ['GROQ_API_KEY'] = os.getenv('GROQ_API_KEY')
+ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 
 groq_api_key = os.getenv('GROQ_API_KEY')
 
@@ -187,6 +260,257 @@ if not groq_api_key:
 if not os.getenv('OPENAI_API_KEY'):
     st.error("🔑 OpenAI API key not found! Please check your .env file.")
     st.stop()
+
+# Initialize voice assistant components
+@st.cache_resource
+def init_voice_engine():
+    """Initialize text-to-speech engine"""
+    try:
+        engine = pyttsx3.init()
+        voices = engine.getProperty('voices')
+        if voices:
+            engine.setProperty('voice', voices[1].id)  # Female voice if available
+        engine.setProperty('rate', 150)
+        engine.setProperty('volume', 0.8)
+        return engine
+    except Exception as e:
+        st.warning(f"Text-to-speech engine initialization failed: {str(e)}")
+        return None
+
+@st.cache_resource
+def init_speech_recognizer():
+    """Initialize speech recognition"""
+    return sr.Recognizer()
+
+# Initialize voice components
+tts_engine = init_voice_engine()
+speech_recognizer = init_speech_recognizer()
+
+# ElevenLabs Voice Options
+ELEVENLABS_VOICES = {
+    "Rachel": "21m00Tcm4TlvDq8ikWAM",
+    "Domi": "AZnzlk1XvdvUeBnXmlld",
+    "Bella": "EXAVITQu4vr4xnSDxMaL",
+    "Antoni": "ErXwobaYiN019PkySvjV",
+    "Elli": "MF3mGyEYCl7XYWbV9V6O",
+    "Josh": "TxGEqnHWrfWFTfGW9XjX",
+    "Arnold": "VR6AewLTigWG4xSOukaG",
+    "Adam": "pNInz6obpgDQGcFmaJgB",
+    "Sam": "yoZ06aMxZJJ28mfd3POQ"
+}
+
+# Initialize session state for voice assistant
+if "listening" not in st.session_state:
+    st.session_state.listening = False
+if "audio_queue" not in st.session_state:
+    st.session_state.audio_queue = queue.Queue()
+if "last_spoken_text" not in st.session_state:
+    st.session_state.last_spoken_text = ""
+if "selected_voice" not in st.session_state:
+    st.session_state.selected_voice = "Rachel"
+if "tts_provider" not in st.session_state:
+    st.session_state.tts_provider = "elevenlabs"
+
+def load_docx_file(file_path):
+    """Load DOCX file using python-docx"""
+    try:
+        doc = Document(file_path)
+        full_text = []
+        for paragraph in doc.paragraphs:
+            if paragraph.text.strip():
+                full_text.append(paragraph.text)
+        
+        # Also extract text from tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text.strip():
+                        full_text.append(cell.text)
+        
+        if full_text:
+            from langchain_core.documents import Document as LangchainDocument
+            content = "\n".join(full_text)
+            return [LangchainDocument(page_content=content, metadata={"source": file_path})]
+        else:
+            return []
+    except Exception as e:
+        st.error(f"Error reading DOCX file: {str(e)}")
+        return []
+
+def text_to_speech_elevenlabs(text, voice_id, stability=0.5, similarity_boost=0.5):
+    """Convert text to speech using ElevenLabs API"""
+    try:
+        if not ELEVENLABS_API_KEY:
+            return "❌ ElevenLabs API key not configured"
+        
+        # ElevenLabs API endpoint
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICES.get(voice_id, '21m00Tcm4TlvDq8ikWAM')}"
+        
+        headers = {
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+            "xi-api-key": ELEVENLABS_API_KEY
+        }
+        
+        data = {
+            "text": text,
+            "model_id": "eleven_monolingual_v1",
+            "voice_settings": {
+                "stability": stability,
+                "similarity_boost": similarity_boost
+            }
+        }
+        
+        response = requests.post(url, json=data, headers=headers)
+        
+        if response.status_code == 200:
+            audio_buffer = io.BytesIO(response.content)
+            audio_buffer.seek(0)
+            
+            # Encode audio for HTML audio element
+            audio_base64 = base64.b64encode(audio_buffer.read()).decode()
+            audio_html = f'''
+                <audio autoplay controls style="width: 100%; margin: 10px 0;">
+                    <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+                    Your browser does not support the audio element.
+                </audio>
+                <div style="text-align: center; color: #ff6b6b; font-size: 0.9rem;">
+                    🎙️ Premium Voice: {list(ELEVENLABS_VOICES.keys())[list(ELEVENLABS_VOICES.values()).index(voice_id)]}
+                </div>
+            '''
+            return audio_html
+        else:
+            return f"❌ ElevenLabs API Error: {response.status_code} - {response.text}"
+            
+    except Exception as e:
+        return f"❌ Error in ElevenLabs TTS: {str(e)}"
+
+def text_to_speech(text, provider="elevenlabs", voice_id=None):
+    """Convert text to speech using selected provider"""
+    try:
+        if provider == "elevenlabs" and ELEVENLABS_API_KEY:
+            if not voice_id:
+                voice_id = ELEVENLABS_VOICES.get(st.session_state.selected_voice, "21m00Tcm4TlvDq8ikWAM")
+            return text_to_speech_elevenlabs(text[:800], voice_id)  # Limit text length
+                
+    except Exception as e:
+        return f"❌ Error in text-to-speech: {str(e)}"
+
+def speech_to_text():
+    """Convert speech to text using microphone input"""
+    try:
+        with sr.Microphone() as source:
+            st.session_state.listening = True
+            speech_recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            
+            # Show listening indicator
+            listening_placeholder = st.empty()
+            listening_placeholder.info("🎤 Listening... Speak now!")
+            
+            # Listen for audio
+            audio = speech_recognizer.listen(source, timeout=10, phrase_time_limit=15)
+            
+            # Recognize speech
+            text = speech_recognizer.recognize_google(audio)
+            listening_placeholder.empty()
+            st.session_state.listening = False
+            return text
+            
+    except sr.WaitTimeoutError:
+        st.session_state.listening = False
+        return "Timeout: No speech detected"
+    except sr.UnknownValueError:
+        st.session_state.listening = False
+        return "Could not understand audio"
+    except sr.RequestError as e:
+        st.session_state.listening = False
+        return f"Error with speech recognition service: {str(e)}"
+    except Exception as e:
+        st.session_state.listening = False
+        return f"Error: {str(e)}"
+
+def voice_query_interface():
+    """Voice query interface component"""
+
+    with st.container():
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+        
+        with col1:
+            if st.button("🎤 Start Listening", use_container_width=True, type="primary"):
+                if "vectors" not in st.session_state:
+                    st.error("Please process documents first!")
+                else:
+                    spoken_text = speech_to_text()
+                    if spoken_text and not spoken_text.startswith(("Timeout", "Could not", "Error")):
+                        st.session_state.voice_query = spoken_text
+                        st.success(f"🎤 Heard: '{spoken_text}'")
+                        
+                        # Process the voice query
+                        response, response_time = process_query(spoken_text)
+                        if response:
+                            # Store in chat history
+                            st.session_state.chat_history.append({
+                                "question": spoken_text,
+                                "answer": response['answer'],
+                                "timestamp": datetime.now(),
+                                "response_time": response_time,
+                                "voice_query": True
+                            })
+
+                            # Display response
+                            st.markdown("### 📋 AI RESPONSE")
+                            st.markdown(f'<div class="response-box">{response["answer"]}</div>', unsafe_allow_html=True)
+                            
+                            # Store for voice replay
+                            st.session_state.last_spoken_text = response['answer']
+                            
+                            # Text-to-speech for the response
+                            st.markdown("### 🔊 AI AUDIO RESPONSE")
+                            audio_response = text_to_speech(
+                                response['answer'], 
+                                provider=st.session_state.tts_provider,
+                                voice_id=ELEVENLABS_VOICES[st.session_state.selected_voice]
+                            )
+                            if audio_response:
+                                st.markdown(audio_response, unsafe_allow_html=True)
+                    else:
+                        st.error(f"Voice recognition failed: {spoken_text}")
+        
+        with col2:
+            if st.session_state.get('last_spoken_text'):
+                if st.button("🔊 Repeat Answer", use_container_width=True):
+                    audio_response = text_to_speech(
+                        st.session_state.last_spoken_text,
+                        provider=st.session_state.tts_provider,
+                        voice_id=ELEVENLABS_VOICES[st.session_state.selected_voice]
+                    )
+                    if audio_response:
+                        st.markdown(audio_response, unsafe_allow_html=True)
+        
+        with col3:
+            # Voice preview
+            if st.button("🎵 Preview Voice", use_container_width=True):
+                preview_text = "Hello! I'm your Shyam AI voice assistant. How can I help you today?"
+                audio_response = text_to_speech(
+                    preview_text,
+                    provider=st.session_state.tts_provider,
+                    voice_id=ELEVENLABS_VOICES[st.session_state.selected_voice]
+                )
+                if audio_response:
+                    st.markdown(audio_response, unsafe_allow_html=True)
+        
+        with col4:
+            if st.button("⏹️ Stop Audio", use_container_width=True):
+                st.info("Refresh page to stop audio playback")
+        
+        # Voice status
+        st.markdown("---")
+        col1, col2 = st.columns(2)
+        with col1:
+            if ELEVENLABS_API_KEY:
+                st.markdown('<div class="success-box">🎙️ ElevenLabs: CONNECTED</div>', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="warning-box">🎙️ ElevenLabs: NOT CONFIGURED</div>', unsafe_allow_html=True)
 
 # Initialize LLM with error handling
 @st.cache_resource
@@ -204,7 +528,7 @@ if llm is None:
 # Create enhanced prompt template
 prompt = ChatPromptTemplate.from_template(
     """
-    You are an expert research assistant analyzing academic documents. 
+    You are an expert research assistant analyzing academic documents please talk in a conversational tone. 
     Provide comprehensive, accurate answers based strictly on the provided context.
     
     GUIDELINES:
@@ -213,6 +537,7 @@ prompt = ChatPromptTemplate.from_template(
     - Provide detailed explanations when appropriate
     - Include relevant technical details from the research papers
     - Structure your response clearly and professionally
+    - please maintain a conversational tone with the user queries
     
     CONTEXT: {context}
     
@@ -246,10 +571,15 @@ def load_uploaded_documents(uploaded_files):
                 st.success(f"✅ Loaded TXT: {uploaded_file.name}")
                 
             elif uploaded_file.name.lower().endswith(('.doc', '.docx')):
-                loader = Docx2txtLoader(tmp_file_path)
-                docs = loader.load()
-                documents.extend(docs)
-                st.success(f"✅ Loaded DOCX: {uploaded_file.name}")
+                if DOCX_AVAILABLE:
+                    docs = load_docx_file(tmp_file_path)
+                    if docs:
+                        documents.extend(docs)
+                        st.success(f"✅ Loaded DOCX: {uploaded_file.name}")
+                    else:
+                        st.warning(f"⚠️ No readable content found in: {uploaded_file.name}")
+                else:
+                    st.warning(f"⚠️ DOCX support not available. Install python-docx: pip install python-docx")
                 
             else:
                 st.warning(f"⚠️ Unsupported file type: {uploaded_file.name}")
@@ -258,7 +588,8 @@ def load_uploaded_documents(uploaded_files):
             st.error(f"❌ Error loading {uploaded_file.name}: {str(e)}")
         finally:
             # Clean up temporary file
-            os.unlink(tmp_file_path)
+            if os.path.exists(tmp_file_path):
+                os.unlink(tmp_file_path)
     
     return documents
 
@@ -409,11 +740,13 @@ def process_query(user_prompt):
         st.error(f"❌ Error processing query: {str(e)}")
         return None, 0
 
-# Initialize session state for chat history
+# Initialize session state for voice assistant
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "document_source" not in st.session_state:
     st.session_state.document_source = "Not initialized"
+if "voice_query" not in st.session_state:
+    st.session_state.voice_query = ""
 
 # Main UI - Professional Header
 st.markdown('<div class="main-header">Syam\'s AI-Powered Document Analyzer</div>', unsafe_allow_html=True)
@@ -421,7 +754,7 @@ st.markdown(
     '<div class="sub-header">'
     '🚀 AI-Powered Document Analysis & Knowledge Extraction System<br>'
     '<small style="color: #88d3ce; font-size: 1.1rem; font-weight: 300;">'
-    'Upload documents • Ask questions • Get answers'
+    'Upload documents • Ask questions • Get answers • Premium Voice Assistant'
     '</small>'
     '</div>', 
     unsafe_allow_html=True
@@ -490,12 +823,21 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # Chat History
+    # Voice Assistant Status
+    st.markdown("#### 🎙️ VOICE STATUS")
+    if ELEVENLABS_API_KEY:
+        st.markdown('<div class="success-box">🎙️ ElevenLabs:VOICE</div>', unsafe_allow_html=True)
+    elif tts_engine:
+        st.markdown('<div class="warning-box">🔊 TTS: SYSTEM VOICE</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="warning-box">🔊 TTS: gTTS ONLY</div>', unsafe_allow_html=True)
+    
     st.markdown("#### 💬 RECENT QUERIES")
     if st.session_state.chat_history:
         for i, chat in enumerate(st.session_state.chat_history[-5:]):
             with st.expander(f"Q: {chat['question'][:50]}..." if len(chat['question']) > 50 else f"Q: {chat['question']}", expanded=False):
-                st.markdown(f'<div class="chat-bubble chat-question"><strong>Question:</strong> {chat["question"]}</div>', unsafe_allow_html=True)
+                voice_indicator = "🎙️ " if chat.get('voice_query') else ""
+                st.markdown(f'<div class="chat-bubble chat-question"><strong>Question:</strong> {voice_indicator}{chat["question"]}</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="chat-bubble chat-answer"><strong>Answer:</strong> {chat["answer"][:150]}...</div>', unsafe_allow_html=True)
     else:
         st.info("No queries yet. Start a conversation!")
@@ -505,10 +847,11 @@ with st.sidebar:
     st.markdown("• Streamlit 🎈")
     st.markdown("• LangChain ⛓️")
     st.markdown("• Groq 🚀")
+    st.markdown("• ElevenLabs 🎙️")
     st.markdown(f"*Session: {datetime.now().strftime('%Y-%m-%d %H:%M')}*")
 
 # Main content area
-tab1, tab2, tab3 = st.tabs(["🔍 QUERY DOCUMENTS", "📊 ANALYTICS", "⚙️ SETTINGS"])
+tab1, tab2, tab3, tab4 = st.tabs(["🔍 QUERY DOCUMENTS", "🎙️ VOICE ASSISTANT", "📊 ANALYTICS", "⚙️ SETTINGS"])
 
 with tab1:
     col1, col2 = st.columns([2, 1])
@@ -539,6 +882,8 @@ with tab1:
             col1, col2, col3 = st.columns([2, 1, 1])
             with col1:
                 ask_button = st.button("🔍 ANALYZE DOCUMENTS", type="primary", use_container_width=True)
+            with col2:
+                speak_button = st.button("🔊 SPEAK ANSWER", use_container_width=True)
             
             if ask_button and user_prompt:
                 response, response_time = process_query(user_prompt)
@@ -565,16 +910,54 @@ with tab1:
                     with col3:
                         st.markdown(f'<div class="metric-card">🤖 Model Used<br><h3>Llama-3.1-8B</h3></div>', unsafe_allow_html=True)
                     
+                    # Store for voice
+                    st.session_state.last_spoken_text = response['answer']
+                    
                     # Source documents
                     with st.expander("📚 VIEW SOURCE DOCUMENTS (4 most relevant)", expanded=False):
                         for i, doc in enumerate(response['context']):
                             st.markdown(f"**Document {i+1}**")
                             st.markdown(f'<div class="source-box">{doc.page_content}</div>', unsafe_allow_html=True)
                             st.markdown("---")
-   
+            
+            if speak_button and user_prompt and "last_spoken_text" in st.session_state:
+                audio_response = text_to_speech(
+                    st.session_state.last_spoken_text,
+                    provider=st.session_state.tts_provider,
+                    voice_id=ELEVENLABS_VOICES[st.session_state.selected_voice]
+                )
+                if audio_response:
+                    st.markdown(audio_response, unsafe_allow_html=True)
 
-# Rest of the code remains the same for tabs 2 and 3...
 with tab2:
+    st.markdown("### 🎙️ PREMIUM VOICE-ENABLED DOCUMENT ASSISTANT")
+    
+    if "vectors" not in st.session_state:
+        st.warning("⚠️ Please process documents first to use the voice assistant!")
+        if st.button("📁 Go to Document Processing", use_container_width=True):
+            st.rerun()
+    else:
+        voice_query_interface()
+        
+        # Voice chat history
+        if any(chat.get('voice_query') for chat in st.session_state.chat_history):
+            st.markdown("### 🎙️ VOICE QUERY HISTORY")
+            voice_chats = [chat for chat in st.session_state.chat_history if chat.get('voice_query')]
+            for chat in voice_chats[-5:]:
+                with st.expander(f"🎙️ {chat['question'][:60]}...", expanded=False):
+                    st.markdown(f'<div class="chat-bubble chat-question"><strong>Voice Question:</strong> {chat["question"]}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="chat-bubble chat-answer"><strong>AI Response:</strong> {chat["answer"]}</div>', unsafe_allow_html=True)
+                    
+                    if st.button(f"🔊 Play Response", key=f"play_{chat['timestamp']}"):
+                        audio_response = text_to_speech(
+                            chat['answer'],
+                            provider=st.session_state.tts_provider,
+                            voice_id=ELEVENLABS_VOICES[st.session_state.selected_voice]
+                        )
+                        if audio_response:
+                            st.markdown(audio_response, unsafe_allow_html=True)
+
+with tab3:
     st.markdown("### 📊 SYSTEM ANALYTICS")
     
     if "vectors" in st.session_state:
@@ -609,6 +992,7 @@ with tab2:
             st.markdown("#### ⚡ PERFORMANCE METRICS")
             if st.session_state.chat_history:
                 avg_response_time = sum([chat['response_time'] for chat in st.session_state.chat_history]) / len(st.session_state.chat_history)
+                voice_queries = len([chat for chat in st.session_state.chat_history if chat.get('voice_query')])
                 st.markdown(f"""
                 <div style='background: linear-gradient(135deg, #1f2833, #0b0c10); padding: 1.5rem; border-radius: 10px; border: 1px solid #45a29e;'>
                     <div style='display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;'>
@@ -617,10 +1001,14 @@ with tab2:
                             <h3 style='color: #00d4aa; margin: 0.5rem 0;'>{len(st.session_state.chat_history)}</h3>
                         </div>
                         <div style='text-align: center;'>
+                            <h4 style='color: #66fcf1; margin: 0;'>Voice Queries</h4>
+                            <h3 style='color: #00d4aa; margin: 0.5rem 0;'>{voice_queries}</h3>
+                        </div>
+                        <div style='text-align: center;'>
                             <h4 style='color: #66fcf1; margin: 0;'>Avg Response Time</h4>
                             <h3 style='color: #00d4aa; margin: 0.5rem 0;'>{avg_response_time:.2f}s</h3>
                         </div>
-                        <div style='text-align: center; grid-column: span 2;'>
+                        <div style='text-align: center;'>
                             <h4 style='color: #66fcf1; margin: 0;'>Session Start</h4>
                             <h3 style='color: #00d4aa; margin: 0.5rem 0;'>{datetime.now().strftime('%H:%M')}</h3>
                         </div>
@@ -629,31 +1017,8 @@ with tab2:
                 """, unsafe_allow_html=True)
             else:
                 st.info("No query data available yet")
-        
-        # Query history
-        if st.session_state.chat_history:
-            st.markdown("#### 📝 QUERY HISTORY")
-            history_html = """
-            <div style='background: linear-gradient(135deg, #1f2833, #0b0c10); padding: 1.5rem; border-radius: 10px; border: 1px solid #45a29e;'>
-                <div style='display: grid; grid-template-columns: 1fr 3fr 1fr; gap: 1rem; padding: 0.5rem; border-bottom: 1px solid #45a29e; font-weight: bold;'>
-                    <div>🕒 Time</div>
-                    <div>💬 Question</div>
-                    <div>⚡ Response</div>
-                </div>
-            """
-            for chat in st.session_state.chat_history[-10:]:
-                question = chat['question'][:50] + "..." if len(chat['question']) > 50 else chat['question']
-                history_html += f"""
-                <div style='display: grid; grid-template-columns: 1fr 3fr 1fr; gap: 1rem; padding: 0.5rem; border-bottom: 1px solid #2a2d3a;'>
-                    <div style='color: #90ee90;'>{chat['timestamp'].strftime('%H:%M:%S')}</div>
-                    <div style='color: #e0f7fa;'>{question}</div>
-                    <div style='color: #4cc9f0;'>{chat['response_time']:.2f}s</div>
-                </div>
-                """
-            history_html += "</div>"
-            st.markdown(history_html, unsafe_allow_html=True)
 
-with tab3:
+with tab4:
     st.markdown("### ⚙️ SYSTEM CONFIGURATION")
     
     col1, col2 = st.columns(2)
@@ -674,17 +1039,17 @@ with tab3:
         chunk_overlap = st.number_input("Chunk Overlap", 0, 500, 200)
         text_splitter = st.selectbox("Text Splitter", ["RecursiveCharacterTextSplitter", "CharacterTextSplitter"])
         
-        st.markdown("#### ℹ️ SYSTEM INFORMATION")
-        st.markdown(f'<div class="metric-card">Python Version<br><h3>3.8+</h3></div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="metric-card">Streamlit<br><h3>{st.__version__}</h3></div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="metric-card">Vector Store<br><h3>FAISS</h3></div>', unsafe_allow_html=True)
+        st.markdown("#### 🎙️ VOICE SETTINGS")
+        tts_engine_choice = st.selectbox("TTS Engine", ["ElevenLabs (Premium)", "gTTS (Online)", "pyttsx3 (Offline)"])
+        speech_rate = st.slider("Speech Rate", 50, 300, 150)
+        auto_play_voice = st.checkbox("Auto-play voice responses", value=True)
 
 # Footer
 st.markdown("---")
 st.markdown(
     "<div style='text-align: center; color: #66fcf1; font-size: 0.9rem;'>"
     "🔍 Document Intelligence Platform • Built with Streamlit, LangChain, and Groq • "
-    "Enterprise Ready AI Solution"
+    "ElevenLabs Voice Assistant • Enterprise Ready AI Solution"
     "</div>", 
     unsafe_allow_html=True
 )
