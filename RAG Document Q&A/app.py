@@ -502,15 +502,6 @@ def voice_query_interface():
         with col4:
             if st.button("⏹️ Stop Audio", use_container_width=True):
                 st.info("Refresh page to stop audio playback")
-        
-        # Voice status
-        st.markdown("---")
-        col1, col2 = st.columns(2)
-        with col1:
-            if ELEVENLABS_API_KEY:
-                st.markdown('<div class="success-box">🎙️ ElevenLabs: CONNECTED</div>', unsafe_allow_html=True)
-            else:
-                st.markdown('<div class="warning-box">🎙️ ElevenLabs: NOT CONFIGURED</div>', unsafe_allow_html=True)
 
 # Initialize LLM with error handling
 @st.cache_resource
@@ -822,15 +813,6 @@ with st.sidebar:
         st.rerun()
     
     st.markdown("---")
-    
-    # Voice Assistant Status
-    st.markdown("#### 🎙️ VOICE STATUS")
-    if ELEVENLABS_API_KEY:
-        st.markdown('<div class="success-box">🎙️ ElevenLabs:VOICE</div>', unsafe_allow_html=True)
-    elif tts_engine:
-        st.markdown('<div class="warning-box">🔊 TTS: SYSTEM VOICE</div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="warning-box">🔊 TTS: gTTS ONLY</div>', unsafe_allow_html=True)
     
     st.markdown("#### 💬 RECENT QUERIES")
     if st.session_state.chat_history:
